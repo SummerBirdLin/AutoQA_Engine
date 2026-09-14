@@ -74,18 +74,27 @@ class TestWorkflowEndToEnd(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_blind_click_protection(self):
-        """测试防盲点保护：当模型返回不存在的选项时，必须安全拒绝点击"""
+        """测试防盲点保护：当选项不存在且所有降级机制关闭时，必须安全拒绝点击"""
         options_coords = {"A": (100.0, 100.0), "B": (100.0, 150.0)}
         metadata = {"logical_left": 0.0, "logical_top": 0.0, "scale_x": 1.0, "scale_y": 1.0}
 
-        # 模型返回 "D"，但只有 A 和 B
-        ok = self.agent.executor.click_option(
-            target_option="D",
-            options_coords=options_coords,
-            metadata=metadata,
-            dry_run=True
-        )
-        self.assertFalse(ok)
+        # 临时禁用 fallback，测试严格防盲点保护拦截
+        orig_fb = self.agent.executor.config.get("action", {}).get("fallback", {})
+        self.agent.executor.config["action"]["fallback"] = {
+            "enable_geometric_click": False,
+            "enable_keyboard_shortcut": False,
+            "enable_user_notification": False,
+        }
+        try:
+            ok = self.agent.executor.click_option(
+                target_option="D",
+                options_coords=options_coords,
+                metadata=metadata,
+                dry_run=True
+            )
+            self.assertFalse(ok)
+        finally:
+            self.agent.executor.config["action"]["fallback"] = orig_fb
 
     def test_auto_next_termination_on_last_question(self):
         """测试当未检测到下一题或下一题未更新时，自动安全停止"""
