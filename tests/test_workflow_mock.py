@@ -162,6 +162,59 @@ class TestWorkflowEndToEnd(unittest.TestCase):
             self.assertEqual(clicked_next_coords[0], (250.0, 350.0))
             self.assertEqual(clicked_next_coords[1], (250.0, 350.0))
 
+    def test_is_same_question_accuracy(self):
+        """测试题干相似度对比与标点/OCR 抖动容忍度"""
+        from main import AutoQAAgent
+
+        # 标点、引号、空白差异应判定为同一题
+        q_real1 = "5. 单选题 根据总体国家安全观，下列哪一项最能体现‘安全与发展并重’的原则？"
+        q_real2 = "5. 单选题 根据总体国家安全观，下列哪一项最能体现'安全与发展并重'的原则？"
+        q_real3 = "5. 单选题 根据总体国家安全观，下列哪一项最能体现“安全与发展并重”的原则？"
+        self.assertTrue(AutoQAAgent.is_same_question(q_real1, q_real2))
+        self.assertTrue(AutoQAAgent.is_same_question(q_real1, q_real3))
+
+        # 明显不同题目应判定为不同题
+        self.assertFalse(AutoQAAgent.is_same_question("这是第 1 题", "这是第 2 题"))
+        self.assertFalse(AutoQAAgent.is_same_question("4. 单选题 维护国家安全的神圣义务", q_real1))
+
+    def test_last_question_infinite_loop_prevention(self):
+        """测试最后一题点击下一题后页面未变（或带微小 OCR 抖动）时，双重保护机制安全终止"""
+        from core.ocr_engine import QAResult
+
+        # 最后一题：带有微小标点差异的同题 OCR
+        qa_frame1 = QAResult(
+            question="5. 单选题 根据总体国家安全观，下列哪一项最能体现‘安全与发展并重’的原则？",
+            options=["A. 选项A", "B. 选项B"],
+            options_coords={"A": (100.0, 100.0), "B": (100.0, 150.0)},
+            next_button_coord=(250.0, 350.0),
+        )
+        qa_frame2 = QAResult(
+            question="5. 单选题 根据总体国家安全观，下列哪一项最能体现'安全与发展并重'的原则？",
+            options=["A. 选项A", "B. 选项B"],
+            options_coords={"A": (100.0, 100.0), "B": (100.0, 150.0)},
+            next_button_coord=(250.0, 350.0),
+        )
+
+        metadata = {"logical_left": 0.0, "logical_top": 0.0, "scale_x": 1.0, "scale_y": 1.0}
+        solved_count = 0
+
+        def count_solve(*args, **kwargs):
+            nonlocal solved_count
+            solved_count += 1
+            return ["B"]
+
+        with patch.object(self.agent.capturer, "capture", return_value=(self.mock_img, metadata)), \
+             patch.object(self.agent.ocr_engine, "parse_qa", side_effect=[qa_frame1, qa_frame2, qa_frame2]), \
+             patch.object(self.agent.llm_reasoner, "solve", side_effect=count_solve), \
+             patch.object(self.agent.executor, "click_next_button", return_value=True):
+
+            # 设置极短翻页判定超时，防止单元测试耗时过长
+            self.agent.config["auto_next"]["page_transition_timeout"] = 0.5
+            success = self.agent.run_auto_qa_loop(once=False)
+            self.assertTrue(success)
+            # 必须仅作答 1 次，随后识别到页面未变退出，绝不陷入死循环
+            self.assertEqual(solved_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

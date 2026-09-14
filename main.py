@@ -102,6 +102,7 @@ class AutoQAAgent:
         q_count = 0
         overall_success = True
         cached_next_coord: Optional[Tuple[float, float]] = None
+        last_answered_stem: Optional[str] = None
 
         try:
             while q_count < max_questions:
@@ -129,6 +130,13 @@ class AutoQAAgent:
                 if not qa_res.question:
                     logger.warning("⚠️  未能从当前画面解析出有效题干内容，停止答题。")
                     overall_success = False
+                    break
+
+                # 防死循环双重保护：若当前题与上一轮刚作答的题目相同（未成功翻页），判定到达最后一题
+                if last_answered_stem and self.is_same_question(qa_res.question, last_answered_stem):
+                    logger.info("🏁 【已到达最后一题】检测到当前题目与上一题相同（点击下一题未发生页面跳转），自动安全停止答题闭环！")
+                    if qa_res.submit_button_coord:
+                        logger.info(f"💡 检测到【交卷/提交】按钮，坐标: {qa_res.submit_button_coord} (请人工确认交卷)")
                     break
 
                 if not qa_res.options_coords:
@@ -161,6 +169,8 @@ class AutoQAAgent:
                     if not ok:
                         overall_success = False
                     time.sleep(0.05)
+
+                last_answered_stem = qa_res.question
 
                 total_elapsed_ms = (time.perf_counter() - total_start) * 1000.0
                 logger.info(f"🏁 第 {q_count} 题作答完成 | 单题总耗时: {total_elapsed_ms:.2f} ms")
@@ -222,8 +232,26 @@ class AutoQAAgent:
         """单题执行模式"""
         return self.run_auto_qa_loop(once=True)
 
+    @staticmethod
+    def is_same_question(q1: str, q2: str, thresh: float = 0.85) -> bool:
+        """比对两道题干是否为同一题 (消除空白、标点与 OCR 识别抖动影响)"""
+        if not q1 or not q2:
+            return False
+        import difflib
+        import re
+        # 归一化标点与空白，保留汉字、英文字母与数字，消除引号/破折号/微小标点差异
+        punct_pattern = r"[\s\.\,\、\，\。\？\?\'\"\‘\’\“\”\:\：\(\)（）\[\]【】\<\>《》·\-\_—]+"
+        c1 = re.sub(punct_pattern, "", q1)
+        c2 = re.sub(punct_pattern, "", q2)
+        if not c1 or not c2:
+            return q1.strip() == q2.strip()
+        if c1 == c2:
+            return True
+        sim = difflib.SequenceMatcher(None, c1, c2).ratio()
+        return sim >= thresh
+
     def _wait_for_question_transition(self, last_question: str, timeout: float = 2.5) -> bool:
-        """等待下一题加载并比对题干语义"""
+        """等待下一题加载并比对题干语义 (容忍 OCR 标点与微小抖动)"""
         start = time.perf_counter()
         while time.perf_counter() - start < timeout:
             if self.stop_event.is_set():
@@ -232,8 +260,8 @@ class AutoQAAgent:
             try:
                 img_bgr, _ = self.capturer.capture()
                 new_qa = self.ocr_engine.parse_qa(img_bgr)
-                # 题干已提取且与上一题不同
-                if new_qa.question and new_qa.question != last_question:
+                # 题干已提取，且与上一题不是同一题 (消除 OCR 标点微小抖动误判)
+                if new_qa.question and not self.is_same_question(new_qa.question, last_question):
                     return True
             except Exception:
                 pass
