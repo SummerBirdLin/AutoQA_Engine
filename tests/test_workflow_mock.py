@@ -119,6 +119,49 @@ class TestWorkflowEndToEnd(unittest.TestCase):
             success = self.agent.run_auto_qa_loop(once=False)
             self.assertTrue(success)
 
+    def test_cached_next_button_reuse(self):
+        """测试下一题坐标缓存复用：第 1 题检测到按钮，第 2 题漏检时复用第 1 题坐标"""
+        from core.ocr_engine import QAResult
+
+        # 第 1 题：检出下一题按钮 (250.0, 350.0)
+        qa1 = QAResult(
+            question="这是第 1 题",
+            options=["A. 选项 1", "B. 选项 2"],
+            options_coords={"A": (100.0, 100.0), "B": (100.0, 150.0)},
+            next_button_coord=(250.0, 350.0),
+        )
+        # 第 2 题：因 OCR 抖动漏检下一题 (next_button_coord=None)
+        qa2 = QAResult(
+            question="这是第 2 题",
+            options=["A. 选项 1", "B. 选项 2"],
+            options_coords={"A": (100.0, 100.0), "B": (100.0, 150.0)},
+            next_button_coord=None,  # 漏检
+        )
+
+        metadata = {"logical_left": 0.0, "logical_top": 0.0, "scale_x": 1.0, "scale_y": 1.0}
+
+        clicked_next_coords = []
+        original_click_next = self.agent.executor.click_next_button
+
+        def mock_click_next(next_button_coord, **kwargs):
+            clicked_next_coords.append(next_button_coord)
+            return original_click_next(next_button_coord, **kwargs)
+
+        # 模拟执行第 1 题后跳转到第 2 题，再跳转判定停止
+        with patch.object(self.agent.capturer, "capture", return_value=(self.mock_img, metadata)), \
+             patch.object(self.agent.ocr_engine, "parse_qa", side_effect=[qa1, qa2, qa2]), \
+             patch.object(self.agent.llm_reasoner, "solve", return_value=["A"]), \
+             patch.object(self.agent.executor, "click_next_button", side_effect=mock_click_next), \
+             patch.object(self.agent, "_wait_for_question_transition", side_effect=[True, False]):
+
+            success = self.agent.run_auto_qa_loop(once=False)
+            self.assertTrue(success)
+
+            # 验证点击了两次下一题：第 1 次用原坐标，第 2 次成功复用缓存坐标
+            self.assertEqual(len(clicked_next_coords), 2)
+            self.assertEqual(clicked_next_coords[0], (250.0, 350.0))
+            self.assertEqual(clicked_next_coords[1], (250.0, 350.0))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -101,6 +101,7 @@ class AutoQAAgent:
 
         q_count = 0
         overall_success = True
+        cached_next_coord: Optional[Tuple[float, float]] = None
 
         try:
             while q_count < max_questions:
@@ -168,12 +169,19 @@ class AutoQAAgent:
                 if once or not auto_next_enabled:
                     break
 
-                # 5. “下一题”按钮检测与判断
-                if not qa_res.next_button_coord:
-                    logger.info("🏁 【已到达最后一题】当前画面未检测到“下一题”按钮，自动安全停止答题闭环！")
+                # 5. “下一题”按钮检测与坐标缓存复用
+                if qa_res.next_button_coord:
+                    cached_next_coord = qa_res.next_button_coord
+
+                target_next_coord = qa_res.next_button_coord or cached_next_coord
+                if not target_next_coord:
+                    logger.info("🏁 【已到达最后一题】当前画面未检测到“下一题”按钮且无历史缓存，自动安全停止答题闭环！")
                     if qa_res.submit_button_coord:
                         logger.info(f"💡 检测到【交卷/提交】按钮，坐标: {qa_res.submit_button_coord} (请人工确认交卷)")
                     break
+
+                if not qa_res.next_button_coord and cached_next_coord:
+                    logger.info(f"💡 [下一题坐标缓存复用] 当前题未检出按钮，直接复用已锁定的坐标: {cached_next_coord}")
 
                 # 停顿片刻，模拟拟人化答题节奏并确保网页选项勾选状态已更新
                 if click_to_next_delay > 0:
@@ -183,9 +191,9 @@ class AutoQAAgent:
                     break
 
                 # 点击“下一题”
-                logger.info("👉 正在点击【下一题】按钮...")
+                logger.info(f"👉 正在点击【下一题】按钮 (坐标: {target_next_coord})...")
                 self.executor.click_next_button(
-                    next_button_coord=qa_res.next_button_coord,
+                    next_button_coord=target_next_coord,
                     metadata=metadata,
                     dry_run=self.dry_run,
                     stop_event=self.stop_event,
