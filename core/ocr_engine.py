@@ -58,6 +58,14 @@ class OCREngine:
                 self.engine.min_height = 10
         logger.info("🔍 RapidOCR 引擎初始化完成 (CPU 本地推理)")
 
+        # 视觉神经网络辅助检测器 (Microsoft OmniParser)
+        try:
+            from core.ui_detector import OmniUIDetector
+            self.ui_detector = OmniUIDetector(self.config)
+        except Exception as e:
+            logger.warning(f"⚠️ 未加载 OmniUIDetector: {e}")
+            self.ui_detector = None
+
     def recognize(self, img_bgr: np.ndarray) -> List[TextBlock]:
         """执行 OCR 识别并返回过滤后的 TextBlock 列表"""
         with TimerContext("RapidOCR Inference"):
@@ -94,6 +102,21 @@ class OCREngine:
             return QAResult(question="", options=[], options_coords={}, text_blocks=[])
 
         qa_result = self._extract_qa_structure(blocks, img_bgr)
+
+        # 5. 双轨空间融合：若启用了 OmniParser 视觉目标检测，融合视觉控件与 OCR 文本坐标
+        if getattr(self, "ui_detector", None) and self.ui_detector.enabled and img_bgr is not None:
+            try:
+                stem_max_y = 0.0
+                if qa_result.text_blocks:
+                    stem_max_y = max(b.center_y for b in qa_result.text_blocks[:min(3, len(qa_result.text_blocks))])
+
+                qa_result.options_coords = self.ui_detector.fuse_options_with_ocr(
+                    img_bgr=img_bgr,
+                    ocr_options_coords=qa_result.options_coords,
+                    stem_max_y=stem_max_y
+                )
+            except Exception as e:
+                logger.error(f"❌ OmniParser 空间融合异常: {e}")
 
         if self.save_debug_image:
             self.draw_debug_image(img_bgr, qa_result, self.debug_image_path)

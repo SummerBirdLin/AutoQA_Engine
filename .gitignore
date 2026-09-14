@@ -24,3 +24,8 @@ logs/
 # Sensitive local configurations (API keys)
 config/settings.yaml
 
+# Neural network weights & vision models
+models/
+*.pt
+*.onnx
+.ultralytics/

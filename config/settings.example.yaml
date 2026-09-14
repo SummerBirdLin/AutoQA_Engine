@@ -35,7 +35,20 @@ ocr:
   # 置信度阈值过滤 (调至 0.35 确保单字 '对'/'错' 以及字母图标不被误滤)
   min_confidence: 0.35
 
-# 3. 大语言模型配置 (LLM Reasoning)
+# 3. 视觉控件目标检测配置 (Visual UI Detection - Microsoft OmniParser)
+vision:
+  # 是否启用 OmniParser UI 控件目标检测 (专门定位单选圆圈、复选方框与选项卡片)
+  enable_omniparser: true
+  # 模型权重路径
+  model_path: "models/omniparser/model.pt"
+  # 计算设备: "auto" (自动优先使用 Apple Silicon mps GPU 加速，约 53ms), "mps", "cpu"
+  device: "auto"
+  # 控件检测置信度阈值
+  conf_threshold: 0.20
+  # 推理图像分辨率 (默认 640，兼顾超低延迟与精准度)
+  imgsz: 640
+
+# 4. 大语言模型配置 (LLM Reasoning)
 llm:
   # 兼容 OpenAI API 规范，支持 DeepSeek-V3 / Qwen / OpenAI / 火山方舟
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
