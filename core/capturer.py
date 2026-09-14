@@ -57,6 +57,29 @@ def list_visible_windows() -> List[Dict[str, Any]]:
     return results
 
 
+def focus_application(app_name: str) -> bool:
+    """激活并聚焦指定应用 (支持 macOS 浏览器、考试客户端等)"""
+    if not is_macos() or not app_name or app_name.lower() == "active":
+        return False
+    try:
+        from AppKit import NSWorkspace
+        workspace = NSWorkspace.sharedWorkspace()
+        for app in workspace.runningApplications():
+            if app.localizedName() and app_name.lower() in app.localizedName().lower():
+                app.activateWithOptions_(1 << 1)  # NSApplicationActivateIgnoringOtherApps
+                logger.info(f"✨ 已自动激活并置顶应用窗口: '{app.localizedName()}'")
+                return True
+    except Exception:
+        pass
+    try:
+        import subprocess
+        cmd = f'tell application "{app_name}" to activate'
+        res = subprocess.run(["osascript", "-e", cmd], capture_output=True, text=True, timeout=1.0)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
 def get_frontmost_app_window() -> Optional[Dict[str, Any]]:
     """获取当前处于最前端活跃应用的主窗口"""
     if not is_macos():
@@ -99,9 +122,10 @@ class ScreenCapturer:
         self.config = config or {}
         capture_cfg = self.config.get("capture", {})
         
-        # 捕获模式: "window" (推荐：针对应用窗口一键截屏) 或 "roi" (指定局部坐标矩形)
+        # 捕获模式: "window" (推荐窗口模式), "fullscreen" (全屏浏览器/全屏平台), "roi" (指定局部矩形)
         self.mode = capture_cfg.get("mode", "window")
         self.target_app = capture_cfg.get("target_app", "active")
+        self.auto_focus_window = bool(capture_cfg.get("auto_focus_window", True))
         
         self.roi = capture_cfg.get("roi", {"left": 0, "top": 0, "width": 800, "height": 600})
         self.monitor_index = capture_cfg.get("monitor_index", 1)
@@ -132,33 +156,83 @@ class ScreenCapturer:
         target_app: Optional[str] = None
     ) -> Tuple[np.ndarray, Dict[str, float]]:
         """
-        统一捕获入口：根据配置策略自动执行应用窗口独立截屏或 ROI 截屏
+        统一捕获入口：根据配置策略自动执行全屏截屏、应用窗口截屏或 ROI 截屏
         """
-        mode = self.mode
+        mode = self.mode.lower() if self.mode else "window"
         app = target_app or self.target_app
 
+        if self.auto_focus_window and app and app.lower() != "active":
+            focus_application(app)
+
+        # 模式 1: 原生全屏截屏 (针对全屏浏览器 Web 平台 / 全屏客户端)
+        if mode in ["fullscreen", "screen", "all"]:
+            logger.info(f"🖥️  [全屏模式截屏] 捕获显示器 {self.monitor_index} 完整全屏画面...")
+            return self.capture_fullscreen(self.monitor_index)
+
+        # 模式 2: 应用窗口独立截屏 (支持普通窗口与全屏窗口)
         if mode == "window" and is_macos():
             target_win = None
             if app and app.lower() != "active":
                 target_win = find_window_by_app_name(app)
                 if not target_win:
-                    logger.warning(f"⚠️  未找到名为 '{app}' 的窗口，尝试获取最前端活跃应用窗口...")
+                    logger.warning(f"⚠️  未找到名为 '{app}' 的窗口，尝试获取最前端活跃窗口...")
             
             if not target_win:
                 target_win = get_frontmost_app_window()
 
             if target_win:
                 logger.info(
-                    f"🪟 [应用窗口一键截屏] 应用: {target_win['owner']} | "
+                    f"🪟 [应用窗口截屏] 应用: {target_win['owner']} | "
                     f"标题: {target_win['title'][:35]} | 尺寸: {int(target_win['bounds']['Width'])}x{int(target_win['bounds']['Height'])}"
                 )
                 try:
                     return self.capture_window(target_win["id"], target_win["bounds"])
                 except Exception as e:
-                    logger.error(f"❌ 窗口截屏异常: {e}，正在降级为 ROI 截屏...")
+                    logger.error(f"❌ 独立窗口截屏失败 ({e})，正在自动无缝降级为全屏截屏...")
+                    return self.capture_fullscreen(self.monitor_index)
+            else:
+                logger.info("ℹ️ 未枚举到独立窗口句柄 (可能处于独立全屏 Space 或 Web 全屏)，自动启动全屏捕获...")
+                return self.capture_fullscreen(self.monitor_index)
 
-        # 降级或 ROI 模式
+        # 模式 3: ROI 局部截屏
         return self.capture_roi(custom_roi)
+
+    def capture_fullscreen(self, monitor_idx: Optional[int] = None) -> Tuple[np.ndarray, Dict[str, float]]:
+        """
+        原生全屏截屏 (适配全屏浏览器 Web 答题平台、独立 Space 全屏、客户端 F11 全屏)
+        """
+        sct = self._get_sct()
+        idx = monitor_idx or self.monitor_index
+        mon_idx = min(max(1, idx), len(sct.monitors) - 1)
+        mon = sct.monitors[mon_idx]
+
+        with TimerContext("Screen Capture (Fullscreen)"):
+            sct_img = sct.grab(mon)
+            raw = np.array(sct_img)
+            img_bgr = cv2.cvtColor(raw, cv2.COLOR_BGRA2BGR)
+
+        actual_h, actual_w = img_bgr.shape[:2]
+        logical_w = float(mon["width"])
+        logical_h = float(mon["height"])
+        logical_left = float(mon["left"])
+        logical_top = float(mon["top"])
+
+        scale_x = actual_w / logical_w if logical_w > 0 else self.scale_factor
+        scale_y = actual_h / logical_h if logical_h > 0 else self.scale_factor
+        self.scale_factor = scale_x
+
+        metadata = {
+            "logical_left": logical_left,
+            "logical_top": logical_top,
+            "logical_width": logical_w,
+            "logical_height": logical_h,
+            "physical_width": actual_w,
+            "physical_height": actual_h,
+            "scale_x": scale_x,
+            "scale_y": scale_y,
+            "is_fullscreen": True,
+        }
+        return img_bgr, metadata
 
     def capture_window(self, window_id: int, bounds: Dict[str, float]) -> Tuple[np.ndarray, Dict[str, float]]:
         """
