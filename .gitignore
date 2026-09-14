@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Logs & Debug
+logs/
+*.log
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/
+*.ses
+
+# Sensitive local configurations (API keys)
+config/settings.yaml
+

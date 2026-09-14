@@ -1,0 +1,81 @@
+# Screen-QA-Agent (AutoQA_Engine) 配置模板文件
+# 复制为 settings.yaml 使用：cp config/settings.example.yaml config/settings.yaml
+
+# 1. 屏幕与应用窗口捕获配置 (Capture Strategy)
+capture:
+  # 捕获模式：
+  # - "window": 应用窗口一键独立截屏 (推荐！自动隔离桌面与其它窗口干扰)
+  # - "roi": 指定屏幕矩形区域 (通过 python main.py --calibrate 标定)
+  mode: "window"
+
+  # 当 mode 为 "window" 时：
+  # - "active": 自动截取当前最前端/聚焦的应用窗口 (如 Chrome、Safari、考试客户端等)
+  # - 或指定应用名称 (如 "Google Chrome", "Safari", "Code")
+  target_app: "active"
+
+  # 感兴趣区域 (当 mode 为 "roi" 时的逻辑坐标，与系统鼠标坐标 1:1 对应)
+  roi:
+    left: 200
+    top: 200
+    width: 600
+    height: 500
+  # macOS Retina 屏幕缩放比例 (填 0 表示自动获取，典型 MacBook Retina 为 2.0)
+  scale_factor: 0.0
+  # 多显示器索引 (1 为主显示器)
+  monitor_index: 1
+
+# 2. OCR 识别引擎配置 (RapidOCR)
+ocr:
+  # OCR 是否输出调试可视化图
+  save_debug_image: false
+  debug_image_path: "logs/debug_ocr.png"
+  # 置信度阈值过滤 (调至 0.35 确保单字 '对'/'错' 以及字母图标不被误滤)
+  min_confidence: 0.35
+
+# 3. 大语言模型配置 (LLM Reasoning)
+llm:
+  # 兼容 OpenAI API 规范，支持 DeepSeek-V3 / Qwen / OpenAI / 火山方舟
+  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  api_key: "${LLM_API_KEY}" # 支持从环境变量中读取，或在此直接填写
+  model: "deepseek-v4-flash-ga-260731"
+  # 超时时间 (秒)：建议 8.0s，避免公网 API 偶发排队造成异常超时中断
+  timeout_seconds: 8.0
+  temperature: 0.1
+
+# 4. 执行与鼠标行为配置 (Action & Mouse)
+action:
+  # 随机像素偏移量 (拟人化防检测，正负微移)
+  random_jitter_pixels: 3
+  # 鼠标平滑移动耗时 (秒)
+  move_duration_min: 0.05
+  move_duration_max: 0.12
+  # 安全机制：鼠标甩至屏幕四角立即急停
+  pyautogui_failsafe: true
+  # 点击前是否先聚焦目标应用
+  click_after_delay_sec: 0.02
+
+# 5. 全局热键与触发模式 (Hotkeys & Triggers)
+triggers:
+  # 手动触发单次答题热键 (支持 <f8>，或组合键如 <ctrl>+<alt>+r, ctrl+shift+a)
+  trigger_hotkey: "<f8>"
+  # 紧急制动 / 全局退出热键
+  kill_switch_hotkey: "<ctrl>+q"
+  # 是否开启轮询自动触发 (基于图像哈希变化感知)
+  polling_mode: false
+  polling_interval_seconds: 1.0
+  # pHash 相似度阈值 (差异大于此值判定为题目更新)
+  phash_diff_threshold: 8
+
+# 6. 连续自动答题与下一题配置 (Auto Next Question)
+auto_next:
+  # 开启后，选好答案将自动点击“下一题”并连续答题直至最后一题
+  enabled: true
+  # 选好选项到点击“下一题”之间的拟人化停顿 (秒)
+  click_option_to_next_delay: 1.0
+  # 等待下一题画面加载的最大等待超时 (秒)
+  page_transition_timeout: 2.5
+  # 单次连答最大题数上限安全保护 (防止异常死循环)
+  max_questions: 100
+  # 判定为最后一题时是否自动交卷 (为安全起见建议保持 false，由用户人工确认交卷)
+  auto_submit: false
+
