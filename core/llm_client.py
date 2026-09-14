@@ -60,6 +60,7 @@ class LLMReasoner:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 timeout=self.timeout_seconds,
+                max_retries=0,
             )
             logger.info(f"🤖 LLM 客户端就绪 | Model: {self.model} | BaseURL: {self.base_url}")
         else:
@@ -116,6 +117,7 @@ class LLMReasoner:
                             {"role": "user", "content": user_content},
                         ],
                         temperature=self.temperature,
+                        timeout=self.timeout_seconds,
                         response_format={"type": "json_object"} if "deepseek" in self.model or "gpt" in self.model else None,
                     )
                     raw_reply = response.choices[0].message.content or ""

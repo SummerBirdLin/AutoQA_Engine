@@ -147,6 +147,7 @@ class AutoQAAgent:
 
                 # 3. LLM 智能决策
                 valid_keys = list(qa_res.options_coords.keys()) if qa_res.options_coords else ["A", "B", "C", "D"]
+                logger.info(f"🤖 正在向大语言模型请求答案决策 (模型: {self.llm_reasoner.model})...")
                 answers = self.llm_reasoner.solve(qa_res.question, qa_res.options, valid_keys)
                 if not answers:
                     logger.error("❌ 模型未返回有效答案，终止答题。")

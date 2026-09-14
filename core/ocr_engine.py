@@ -230,15 +230,33 @@ class OCREngine:
         valid_blocks = [b for idx, b in enumerate(blocks) if idx not in ignore_indices]
 
         # --- 步骤 2：判断题专用精准结构解析 ---
+        # 优先排查是否包含单选/多选/选择题标头 (防止题干出现"可以判断..."时误判为判断题)
+        has_choice_header = any(
+            bool(re.search(r"(?:单选|多选|不定项|选择题)", b.text))
+            for b in valid_blocks[:4]
+        )
+        has_judgment_header = any(
+            bool(re.search(r"^(?:\d+[\.、:：\s]*)?判断题?", b.text.strip()))
+            for b in valid_blocks[:4]
+        )
+
         is_judgment = False
-        for b in valid_blocks:
-            t = b.text.strip()
-            if "判断题" in t or "判断" in t:
+        if not has_choice_header:
+            if has_judgment_header:
                 is_judgment = True
-                break
-            if t in ["对", "错", "正确", "错误"]:
-                is_judgment = True
-                break
+            else:
+                # 若无明确标头，仅当页面存在独立的“对/错”判断词且缺乏长选项时，才认定为判断题
+                standalone_judgment_tokens = [
+                    b for b in valid_blocks
+                    if b.text.strip() in ["对", "错", "正确", "错误", "√", "×"]
+                ]
+                if len(standalone_judgment_tokens) >= 1:
+                    long_blocks = [
+                        b for b in valid_blocks
+                        if len(b.text.strip()) > 8 and not header_pattern.match(b.text)
+                    ]
+                    if len(long_blocks) <= 2:
+                        is_judgment = True
 
         if is_judgment:
             return self._extract_judgment_qa(
@@ -357,7 +375,9 @@ class OCREngine:
             num_lbl = str(idx + 1)
             options_coords[lbl] = (cx, cy)
             options_coords[num_lbl] = (cx, cy)
-            options_dict[lbl] = f"{lbl}. {opt_text}"
+            # 剔除可能混入选项首部的单字母与标点 (如 'B 道德的...' -> '道德的...')
+            clean_opt = re.sub(rf"^[{lbl}{lbl.lower()}][\.、:：\s\-)]\s*", "", opt_text).strip()
+            options_dict[lbl] = f"{lbl}. {clean_opt}" if clean_opt else f"{lbl}. {opt_text}"
 
         options_list = list(options_dict.values())
         logger.info(f"📝 题干提取: {question_text[:60]}..." if len(question_text) > 60 else f"📝 题干提取: {question_text}")

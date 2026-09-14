@@ -213,6 +213,29 @@ class TestOCRQAStructure(unittest.TestCase):
         reply = "经分析，该说法是正确的，本题答案是对。"
         self.assertEqual(LLMReasoner.parse_llm_response(reply, valid_keys), ["对"])
 
+    def test_choice_question_with_judgment_word_not_misclassified(self):
+        """测试包含'判断'动词或'错误'字样的单选题绝不被误判为判断题"""
+        blocks = [
+            TextBlock(box=[[25, 175], [87, 175], [87, 192], [25, 192]], text="2.单选题", confidence=0.9),
+            TextBlock(box=[[29, 217], [413, 217], [413, 232], [29, 232]], text="下列关于道德的三个主要功能的描述，哪项是错误的？", confidence=0.9),
+            TextBlock(box=[[89, 279], [372, 279], [372, 296], [89, 296]], text="道德具有评价功能，可以判断行为的善恶。", confidence=0.9),
+            TextBlock(box=[[49, 352], [58, 352], [58, 361], [49, 361]], text="B", confidence=0.9),
+            TextBlock(box=[[89, 349], [357, 349], [357, 364], [89, 364]], text="道德的激励功能主要通过物质奖励实现。", confidence=0.9),
+            TextBlock(box=[[89, 419], [373, 419], [373, 434], [89, 434]], text="道德的调控功能能够影响社会成员的行为。", confidence=0.9),
+            TextBlock(box=[[89, 488], [373, 488], [373, 504], [89, 504]], text="道德的认知功能是帮助人们理解社会规范。", confidence=0.9),
+        ]
+        qa = self.ocr_engine._extract_qa_structure(blocks)
+
+        # 验证提取为包含 A/B/C/D 4 个选项的单选题，绝非 A(对)/B(错) 的判断题
+        self.assertEqual(len(qa.options), 4)
+        self.assertIn("A", qa.options_coords)
+        self.assertIn("B", qa.options_coords)
+        self.assertIn("C", qa.options_coords)
+        self.assertIn("D", qa.options_coords)
+        self.assertNotIn("对", qa.options_coords)
+        self.assertNotIn("错", qa.options_coords)
+        self.assertEqual(qa.question, "2.单选题 下列关于道德的三个主要功能的描述，哪项是错误的？")
+
 
 if __name__ == "__main__":
     unittest.main()
