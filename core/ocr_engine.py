@@ -106,15 +106,32 @@ class OCREngine:
         # 5. 双轨空间融合：若启用了 OmniParser 视觉目标检测，融合视觉控件与 OCR 文本坐标
         if getattr(self, "ui_detector", None) and self.ui_detector.enabled and img_bgr is not None:
             try:
+                h, w = img_bgr.shape[:2]
                 stem_max_y = 0.0
                 if qa_result.text_blocks:
                     stem_max_y = max(b.center_y for b in qa_result.text_blocks[:min(3, len(qa_result.text_blocks))])
 
+                ui_elements = self.ui_detector.detect_ui_elements(img_bgr)
                 qa_result.options_coords = self.ui_detector.fuse_options_with_ocr(
                     img_bgr=img_bgr,
                     ocr_options_coords=qa_result.options_coords,
+                    detected_elements=ui_elements,
                     stem_max_y=stem_max_y
                 )
+
+                # 视觉保底：若 OCR 未识别到“下一题”文字，检测屏幕右下角区域的可交互按钮
+                if qa_result.next_button_coord is None and ui_elements:
+                    bottom_right_btns = [
+                        e for e in ui_elements
+                        if e.center_x > w * 0.60 and e.center_y > h * 0.80 and e.width < w * 0.50
+                    ]
+                    if bottom_right_btns:
+                        best_btn = max(bottom_right_btns, key=lambda e: (e.center_y, e.center_x))
+                        qa_result.next_button_coord = (best_btn.center_x, best_btn.center_y)
+                        logger.info(
+                            f"✨ [OmniParser 视觉补位] OCR 未识别到下一题文字，视觉网络在右下角精准锁定按钮坐标: "
+                            f"({best_btn.center_x:.1f}, {best_btn.center_y:.1f})"
+                        )
             except Exception as e:
                 logger.error(f"❌ OmniParser 空间融合异常: {e}")
 
@@ -143,7 +160,7 @@ class OCREngine:
 
         # 匹配底部控制按钮 (下一题 / 提交交卷 / 上一题)
         next_btn_pattern = re.compile(
-            r"^(?:下一题|下\s*一\s*题|进入下一题|下一道|下一题\s*[>»]|提交并下一题|下题|Next)$",
+            r"^(?:下一题|下\s*一\s*题|进入下一题|下一道|下一题\s*[>»》›〉]|提交并下一题|下题|Next)$",
             re.IGNORECASE
         )
         submit_btn_pattern = re.compile(
@@ -154,25 +171,43 @@ class OCREngine:
             r"^(?:上一题|上\s*一\s*题|上一道|Prev|Previous)$",
             re.IGNORECASE
         )
+        disclaimer_pattern = re.compile(
+            r"^(?:温馨提示|提示|注意|说明|注[:：]|答题说明|本题得分)",
+            re.IGNORECASE
+        )
 
         next_button_coord: Optional[Tuple[float, float]] = None
         submit_button_coord: Optional[Tuple[float, float]] = None
         control_btn_indices = set()
+        footer_indices = set()
 
         for i, b in enumerate(blocks):
             clean_t = b.text.strip()
-            if next_btn_pattern.match(clean_t):
+            # 剥离各种首尾修饰符与标点 (< > « » ‹ › 《 》 〈 〉 【 】 [ ] ( ))
+            core_t = re.sub(r"^[<«‹《〈【\[\(\s]+|[>»›》〉】\]\)\s]+$", "", clean_t)
+
+            if next_btn_pattern.match(clean_t) or next_btn_pattern.match(core_t) or ("下一题" in core_t and len(core_t) <= 6):
                 next_button_coord = (b.center_x, b.center_y)
                 control_btn_indices.add(i)
                 logger.info(f"🔘 检测到【下一题】按钮: '{clean_t}' 中心坐标: ({b.center_x:.1f}, {b.center_y:.1f})")
-            elif submit_btn_pattern.match(clean_t):
+            elif submit_btn_pattern.match(clean_t) or submit_btn_pattern.match(core_t) or (any(w in core_t for w in ["提交", "交卷"]) and len(core_t) <= 6):
                 # 仅当中下部区域时认定为交卷，防止误判顶部导航的‘提交作业’
                 if b.center_y > 150:
                     submit_button_coord = (b.center_x, b.center_y)
                     control_btn_indices.add(i)
                     logger.info(f"🔘 检测到【交卷/提交】按钮: '{clean_t}' 中心坐标: ({b.center_x:.1f}, {b.center_y:.1f})")
-            elif prev_btn_pattern.match(clean_t):
+            elif prev_btn_pattern.match(clean_t) or prev_btn_pattern.match(core_t) or ("上一题" in core_t and len(core_t) <= 6) or core_t in ["题卡", "答题卡"]:
                 control_btn_indices.add(i)
+            elif disclaimer_pattern.search(clean_t):
+                footer_indices.add(i)
+
+        # 将提示语后续连续多行一并归入 footer_indices
+        for i in range(len(blocks)):
+            if i in footer_indices:
+                base_y = blocks[i].center_y
+                for j in range(i + 1, len(blocks)):
+                    if j not in control_btn_indices and blocks[j].center_y - base_y < 60.0:
+                        footer_indices.add(j)
 
         # --- 步骤 1：顶部状态栏/窗口标题栏去噪 ---
         first_q_idx = -1
@@ -191,7 +226,8 @@ class OCREngine:
                     chrome_indices.add(i)
                     logger.debug(f"🧹 过滤顶部窗口杂项文本: '{blocks[i].text}' (Y={blocks[i].center_y:.1f})")
 
-        valid_blocks = [b for idx, b in enumerate(blocks) if idx not in control_btn_indices and idx not in chrome_indices]
+        ignore_indices = control_btn_indices | chrome_indices | footer_indices
+        valid_blocks = [b for idx, b in enumerate(blocks) if idx not in ignore_indices]
 
         # --- 步骤 2：判断题专用精准结构解析 ---
         is_judgment = False
@@ -220,7 +256,7 @@ class OCREngine:
 
         letter_matches = []
         for i, b in enumerate(blocks):
-            if i in control_btn_indices or i in chrome_indices or header_pattern.match(b.text):
+            if i in ignore_indices or header_pattern.match(b.text):
                 continue
             m = letter_pattern.match(b.text) or single_letter_pattern.match(b.text)
             if m:
@@ -232,7 +268,7 @@ class OCREngine:
         # 必须至少识别出两个不同的字母 (例如 A 和 B)，避免题干中偶然出现的单个大写字母被误当成选项
         if len(unique_letters) >= 2:
             first_opt_idx = letter_matches[0][0]
-            question_lines = [b.text for idx, b in enumerate(blocks[:first_opt_idx]) if idx not in control_btn_indices and idx not in chrome_indices]
+            question_lines = [b.text for idx, b in enumerate(blocks[:first_opt_idx]) if idx not in ignore_indices]
             question_text = " ".join(question_lines).strip()
 
             options_dict: Dict[str, str] = {}
@@ -262,7 +298,7 @@ class OCREngine:
 
         # 策略 4.1: 优先寻找问号或设问标志
         for i, b in enumerate(blocks):
-            if i in control_btn_indices or i in chrome_indices:
+            if i in ignore_indices:
                 continue
             if "？" in b.text or "?" in b.text:
                 split_idx = i + 1
@@ -271,7 +307,7 @@ class OCREngine:
         # 策略 4.2: 寻找冒号或典型设问关键词
         if split_idx == -1:
             for i, b in enumerate(blocks):
-                if i in control_btn_indices or i in chrome_indices:
+                if i in ignore_indices:
                     continue
                 t = b.text.strip()
                 if t.endswith(("：", ":")) or any(k in t for k in ["下列哪", "哪一项", "哪项", "正确的是", "错误的是", "指的是", "是指"]):
@@ -281,7 +317,7 @@ class OCREngine:
         # 策略 4.3: 寻找句号 (。) 且下一行间距明显扩大的分界点
         if split_idx == -1:
             for i in range(len(blocks) - 1):
-                if i in control_btn_indices or i in chrome_indices:
+                if i in ignore_indices:
                     continue
                 t = blocks[i].text.strip()
                 if t.endswith(("。", ".")):
@@ -296,7 +332,7 @@ class OCREngine:
             best_i = 1
             start_search = 1 if len(blocks) > 2 and header_pattern.match(blocks[0].text) else 0
             for i in range(start_search, len(blocks) - 1):
-                if i in control_btn_indices or i in chrome_indices:
+                if i in ignore_indices:
                     continue
                 gap = blocks[i+1].center_y - blocks[i].center_y
                 if gap > max_gap:
@@ -304,8 +340,8 @@ class OCREngine:
                     best_i = i + 1
             split_idx = best_i
 
-        q_blocks = [b for idx, b in enumerate(blocks[:split_idx]) if idx not in control_btn_indices and idx not in chrome_indices]
-        opt_raw_blocks = [b for idx, b in enumerate(blocks[split_idx:]) if (split_idx + idx) not in control_btn_indices and (split_idx + idx) not in chrome_indices]
+        q_blocks = [b for idx, b in enumerate(blocks[:split_idx]) if idx not in ignore_indices]
+        opt_raw_blocks = [b for idx, b in enumerate(blocks[split_idx:]) if (split_idx + idx) not in ignore_indices]
 
         # 题干文本
         question_text = " ".join(b.text for b in q_blocks).strip()
