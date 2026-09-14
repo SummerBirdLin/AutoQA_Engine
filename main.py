@@ -125,31 +125,35 @@ class AutoQAAgent:
 
                 # 2. OCR 识别与题目结构化
                 qa_res = self.ocr_engine.parse_qa(img_bgr)
-                if not qa_res.question or not qa_res.options_coords:
-                    logger.warning("⚠️  未能成功解析出题干或选项坐标，停止答题。")
+                if not qa_res.question:
+                    logger.warning("⚠️  未能从当前画面解析出有效题干内容，停止答题。")
                     overall_success = False
                     break
+
+                if not qa_res.options_coords:
+                    logger.warning("⚠️  未提取到选项精确定位框，进入智能 Fallback 答题流程...")
 
                 if self.stop_event.is_set():
                     break
 
                 # 3. LLM 智能决策
-                valid_keys = list(qa_res.options_coords.keys())
+                valid_keys = list(qa_res.options_coords.keys()) if qa_res.options_coords else ["A", "B", "C", "D"]
                 answers = self.llm_reasoner.solve(qa_res.question, qa_res.options, valid_keys)
                 if not answers:
-                    logger.error("❌ 模型未返回有效答案，终止点击。")
+                    logger.error("❌ 模型未返回有效答案，终止答题。")
                     overall_success = False
                     break
 
                 if self.stop_event.is_set():
                     break
 
-                # 4. 执行点击动作
+                # 4. 执行点击动作 (精准定位点击，或触发多级 Fallback 降级)
                 for ans in answers:
                     ok = self.executor.click_option(
                         target_option=ans,
                         options_coords=qa_res.options_coords,
                         metadata=metadata,
+                        qa_result=qa_res,
                         dry_run=self.dry_run,
                         stop_event=self.stop_event,
                     )
